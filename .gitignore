@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 logs/*.log
 state/*.json
+state/attachments/
 
 # Real, per-deployment config/plist -- contains phone numbers and absolute
 # paths specific to one machine. Templates (config.example.yaml,

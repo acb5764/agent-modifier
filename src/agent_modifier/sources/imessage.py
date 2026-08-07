@@ -24,6 +24,27 @@ WHERE message.ROWID > ? AND message.is_from_me = 0
 ORDER BY message.ROWID
 """
 
+ATTACHMENTS_QUERY = """
+SELECT attachment.filename
+FROM message_attachment_join
+JOIN attachment ON attachment.ROWID = message_attachment_join.attachment_id
+WHERE message_attachment_join.message_id = ?
+"""
+
+
+def _fetch_attachments(conn: sqlite3.Connection, message_rowid: int) -> tuple[Path, ...]:
+    paths = []
+    for (filename,) in conn.execute(ATTACHMENTS_QUERY, (message_rowid,)):
+        if not filename:
+            continue
+        # filename is stored with a literal "~" for the home directory.
+        path = Path(filename).expanduser()
+        if path.exists():
+            paths.append(path)
+        else:
+            logger.warning("attachment on message %s not found on disk: %s", message_rowid, path)
+    return tuple(paths)
+
 
 def _extract_text(text: str | None, attributed_body: bytes | None) -> str | None:
     # On modern macOS, message.text is frequently NULL and the real text is
@@ -87,7 +108,8 @@ class IMessageSource(Source):
                     continue
 
                 instruction = stripped[len(self._trigger):].strip()
-                if not instruction:
+                attachment_paths = _fetch_attachments(conn, rowid)
+                if not instruction and not attachment_paths:
                     continue
 
                 commands.append(
@@ -96,6 +118,7 @@ class IMessageSource(Source):
                         sender_id=sender,
                         instruction=instruction,
                         raw_message_id=str(rowid),
+                        attachment_paths=attachment_paths,
                     )
                 )
         finally:

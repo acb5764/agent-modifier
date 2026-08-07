@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -35,11 +36,13 @@ class Dispatcher:
         target_repo: TargetRepoConfig,
         claude_config: ClaudeConfig,
         log_path: str | Path,
+        attachments_dir: str | Path,
     ):
         self._target_repo = target_repo
         self._claude_config = claude_config
         self._log_path = Path(log_path).expanduser()
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._attachments_dir = Path(attachments_dir).expanduser()
 
     def dispatch(self, command: Command) -> DispatchResult:
         worktree_name = _make_worktree_name(command.instruction)
@@ -47,10 +50,15 @@ class Dispatcher:
         worktree_path = self._target_repo.path / ".claude" / "worktrees" / worktree_name
 
         try:
-            result = self._run_claude(command, worktree_name)
+            # Attachments are staged in a directory outside the repo entirely
+            # (not inside the worktree) because the worktree doesn't exist
+            # yet -- `claude -w` creates it as part of the invocation below.
+            staged_paths = self._stage_attachments(command, worktree_name)
+            result = self._run_claude(command, worktree_name, staged_paths)
         except Exception as exc:  # noqa: BLE001 -- any failure here must not crash the runner
             logger.exception("claude invocation failed for %s", command.raw_message_id)
             self._cleanup_worktree(worktree_name)
+            self._cleanup_attachments(worktree_name)
             outcome = DispatchResult(success=False, message=f"claude invocation failed: {exc}")
             self._audit(command, outcome)
             return outcome
@@ -83,12 +91,34 @@ class Dispatcher:
             return outcome
         finally:
             self._cleanup_worktree(worktree_name)
+            self._cleanup_attachments(worktree_name)
 
-    def _run_claude(self, command: Command, worktree_name: str) -> dict:
+    def _stage_attachments(self, command: Command, worktree_name: str) -> tuple[Path, ...]:
+        if not command.attachment_paths:
+            return ()
+        staging_dir = self._attachments_dir / worktree_name
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        staged = []
+        for i, src in enumerate(command.attachment_paths):
+            dest = staging_dir / f"{i}-{src.name}"
+            shutil.copy2(src, dest)
+            staged.append(dest)
+        return tuple(staged)
+
+    def _run_claude(self, command: Command, worktree_name: str, staged_paths: tuple[Path, ...]) -> dict:
+        prompt = command.instruction or (
+            "Look at the attached file(s) and use them as context for a small, "
+            "sensible change to this repo."
+        )
+        if staged_paths:
+            prompt += "\n\nAttached file(s) (use the Read tool to view them):\n" + "\n".join(
+                f"- {p}" for p in staged_paths
+            )
+
         cmd = [
             "claude",
             "-p",
-            command.instruction,
+            prompt,
             "-w",
             worktree_name,
             "--permission-mode",
@@ -101,6 +131,8 @@ class Dispatcher:
             str(self._claude_config.max_budget_usd),
             "--no-session-persistence",
         ]
+        if staged_paths:
+            cmd += ["--add-dir", str(staged_paths[0].parent)]
         proc = subprocess.run(
             cmd,
             cwd=self._target_repo.path,
@@ -161,12 +193,16 @@ class Dispatcher:
             text=True,
         )
 
+    def _cleanup_attachments(self, worktree_name: str) -> None:
+        shutil.rmtree(self._attachments_dir / worktree_name, ignore_errors=True)
+
     def _audit(self, command: Command, result: DispatchResult) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "source": command.source,
             "sender_id": command.sender_id,
             "instruction": command.instruction,
+            "attachment_count": len(command.attachment_paths),
             "success": result.success,
             "message": result.message,
             "pr_url": result.pr_url,

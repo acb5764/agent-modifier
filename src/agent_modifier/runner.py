@@ -14,6 +14,7 @@ from .state import StateStore
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
 STATE_PATH = REPO_ROOT / "state" / "state.json"
+ATTACHMENTS_DIR = REPO_ROOT / "state" / "attachments"
 DISPATCH_LOG_PATH = REPO_ROOT / "logs" / "dispatch.log"
 RUNNER_LOG_PATH = REPO_ROOT / "logs" / "runner.log"
 
@@ -52,7 +53,12 @@ def run_forever() -> None:
     _configure_logging()
     config = load_config(CONFIG_PATH)
     state = StateStore(STATE_PATH)
-    dispatcher = Dispatcher(config.target_repo, config.claude, log_path=DISPATCH_LOG_PATH)
+    dispatcher = Dispatcher(
+        config.target_repo,
+        config.claude,
+        log_path=DISPATCH_LOG_PATH,
+        attachments_dir=ATTACHMENTS_DIR,
+    )
     sources = _build_sources(config, state)
 
     logger.info(
