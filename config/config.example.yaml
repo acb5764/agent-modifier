@@ -1,0 +1,42 @@
+# agent-modifier configuration template.
+#
+# Copy this file to config.yaml (config.yaml is gitignored -- it holds a
+# real phone number and shouldn't be committed) and fill in your own
+# values. `scripts/setup.sh` does this copy for you automatically if
+# config.yaml doesn't already exist.
+
+# trigger: prefix a message must start with to be treated as a command.
+# Everything after it (trimmed) becomes the instruction sent to Claude Code,
+# e.g. "🥭 add a dark mode toggle" -> instruction "add a dark mode toggle".
+# Any word or emoji works -- this is just an example.
+trigger: "🥭"
+
+target_repo:
+  # Local path to the repo this system modifies. Must already be a git repo
+  # with a configured remote, and `gh auth status` must show access to it.
+  path: "~/projects/YOUR_REPO"
+  base_branch: "main"
+
+allowlist:
+  # Phone numbers / iMessage handles allowed to trigger commands, e.g.
+  # "+15551234567". Messages from anyone not on this list are ignored even
+  # if they match the trigger. An empty list means nothing is ever actioned
+  # -- fill this in before relying on the poller.
+  #
+  # The format must match exactly what's stored in chat.db. Once Full Disk
+  # Access is granted, confirm with:
+  #   sqlite3 ~/Library/Messages/chat.db "SELECT DISTINCT id FROM handle;"
+  imessage: []
+
+poll_interval_seconds: 15
+
+claude:
+  # See `claude --help` for the full list of --permission-mode values.
+  # bypassPermissions is required for unattended runs -- there's no human
+  # available to approve Edit/Bash/etc. tool calls. The worktree + PR-gate
+  # model (see README) is what keeps this safe: nothing lands on
+  # base_branch without a human merging it.
+  permission_mode: "bypassPermissions"
+  # Hard cap on spend per dispatched command, as a backstop against
+  # runaway loops.
+  max_budget_usd: 2.00

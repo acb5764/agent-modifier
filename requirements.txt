@@ -1,0 +1,5 @@
+PyYAML>=6.0
+# Declared package name is "pytypedstream" even though the import is
+# "typedstream" -- must NOT use a "name @ url" requirement line, pip
+# rejects it as a name mismatch against the package's own metadata.
+git+https://github.com/dgelessus/python-typedstream.git

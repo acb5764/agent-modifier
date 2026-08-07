@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+logs/*.log
+state/*.json
+
+# Real, per-deployment config/plist -- contains phone numbers and absolute
+# paths specific to one machine. Templates (config.example.yaml,
+# *.plist.template) are tracked; the generated/filled-in files are not.
+config/config.yaml
+launchd/com.agentmodifier.poller.plist
