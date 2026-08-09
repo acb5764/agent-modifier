@@ -16,6 +16,28 @@ target_repo:
   # with a configured remote, and `gh auth status` must show access to it.
   path: "~/projects/YOUR_REPO"
   base_branch: "main"
+  # Optional: glob patterns (fnmatch-style) for files that are low-risk
+  # enough to push straight to base_branch, no PR needed. A dispatched
+  # change is auto-pushed only if EVERY file it touches matches one of
+  # these patterns; any other file (or no patterns configured) means the
+  # normal push-a-branch + open-a-PR flow is used instead.
+  # auto_push_patterns:
+  #   - "data/inventory.json"
+  # Optional: extra environment variables passed to the `claude` subprocess,
+  # on top of this process's own environment. Every dispatched command runs
+  # in a brand-new git worktree, which only contains committed files -- so
+  # if the target repo has its own tooling (e.g. an MCP server) that reads
+  # secrets from a gitignored .env, that file won't exist in the worktree
+  # and the tooling will silently fall back to defaults. Put those secrets
+  # here instead (this file is already gitignored).
+  # env:
+  #   MONGODB_URI: "mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority"
+  #   MONGODB_DB: "emm"
+  #
+  # If the target repo has an `.mcp.json` at its root, it's passed to every
+  # dispatched session automatically via `--mcp-config` (see dispatcher.py)
+  # so its MCP tools are available without needing the interactive,
+  # per-checkout approval a fresh worktree would otherwise be stuck on.
 
 allowlist:
   # Phone numbers / iMessage handles allowed to trigger commands, e.g.

@@ -31,12 +31,11 @@ def _configure_logging() -> None:
 
 
 def _build_reply(result: DispatchResult) -> str:
-    if result.success:
-        text = f"Done: {result.message}"
-        if result.pr_url:
-            text += f"\n{result.pr_url}"
-        return text
-    return f"Something went wrong: {result.message}"
+    if not result.success:
+        return result.message
+    if result.pr_url:
+        return f"{result.message}\n\nJust needs a quick approve: {result.pr_url}"
+    return result.message
 
 
 def _build_sources(config: Config, state: StateStore) -> list[Source]:
@@ -58,6 +57,7 @@ def run_forever() -> None:
         config.claude,
         log_path=DISPATCH_LOG_PATH,
         attachments_dir=ATTACHMENTS_DIR,
+        state=state,
     )
     sources = _build_sources(config, state)
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -10,6 +10,14 @@ import yaml
 class TargetRepoConfig:
     path: Path
     base_branch: str
+    auto_push_patterns: tuple[str, ...] = ()
+    # Extra environment variables merged into the `claude` subprocess's env
+    # (on top of this process's own env). A dispatched command always runs
+    # in a brand-new git worktree, which only contains committed files --
+    # any gitignored `.env` the target repo's own tooling (e.g. an MCP
+    # server) relies on for secrets won't exist there. Use this to supply
+    # those secrets instead of committing them.
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -55,6 +63,12 @@ def load_config(path: str | Path) -> Config:
         if key not in claude_raw:
             raise ValueError(f"config claude is missing required key: {key}")
 
+    env_raw = target_repo_raw.get("env") or {}
+    if not isinstance(env_raw, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env_raw.items()
+    ):
+        raise ValueError("config target_repo.env must be a mapping of string to string")
+
     trigger = raw["trigger"]
     if not isinstance(trigger, str) or not trigger.strip():
         raise ValueError("config trigger must be a non-empty string")
@@ -64,6 +78,8 @@ def load_config(path: str | Path) -> Config:
         target_repo=TargetRepoConfig(
             path=Path(target_repo_raw["path"]).expanduser(),
             base_branch=target_repo_raw["base_branch"],
+            auto_push_patterns=tuple(target_repo_raw.get("auto_push_patterns") or ()),
+            env=dict(env_raw),
         ),
         allowlist_imessage=list(raw["allowlist"].get("imessage") or []),
         poll_interval_seconds=int(raw["poll_interval_seconds"]),

@@ -32,7 +32,15 @@ later without touching the dispatcher.
    `--add-dir` is what lets Claude's Read tool actually see the staged
    attachment files, since they live outside the worktree it's confined to.
    Claude is instructed (via `--append-system-prompt`) to commit its changes
-   but not push or open a PR.
+   but not push or open a PR. If the target repo has an `.mcp.json` at its
+   root, it's passed explicitly via `--mcp-config`/`--strict-mcp-config` so
+   the dispatched session gets those MCP tools deterministically -- a fresh
+   worktree has never been through the interactive per-checkout approval
+   `.mcp.json` servers normally require, so without this they'd sit
+   "pending approval" and silently be unavailable. Any secrets that tooling
+   needs (e.g. a DB connection string) should go in `target_repo.env` in
+   `config.yaml`, since a gitignored `.env` in the target repo also won't
+   exist in a fresh worktree.
 4. The dispatcher checks that a real commit exists, then pushes the branch
    and runs `gh pr create` itself — this step is deliberately not left to
    the model, so it's deterministic and auditable.
