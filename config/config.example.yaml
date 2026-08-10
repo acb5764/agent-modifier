@@ -11,6 +11,11 @@
 # Any word or emoji works -- this is just an example.
 trigger: "🥭"
 
+# agent_name: shown in PR titles/bodies and signed onto text replies, so it's
+# obvious a change came from this automation and not a human dev. Optional --
+# defaults to "agent-modifier" if omitted.
+agent_name: "agent-modifier"
+
 target_repo:
   # Local path to the repo this system modifies. Must already be a git repo
   # with a configured remote, and `gh auth status` must show access to it.
