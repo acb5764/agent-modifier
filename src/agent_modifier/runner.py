@@ -30,12 +30,14 @@ def _configure_logging() -> None:
     )
 
 
-def _build_reply(result: DispatchResult) -> str:
+def _build_reply(result: DispatchResult, agent_name: str) -> str:
     if not result.success:
-        return result.message
-    if result.pr_url:
-        return f"{result.message}\n\nJust needs a quick approve: {result.pr_url}"
-    return result.message
+        body = result.message
+    elif result.pr_url:
+        body = f"{result.message}\n\nJust needs a quick approve: {result.pr_url}"
+    else:
+        body = result.message
+    return f"{body}\n\n— {agent_name}"
 
 
 def _build_sources(config: Config, state: StateStore) -> list[Source]:
@@ -58,6 +60,7 @@ def run_forever() -> None:
         log_path=DISPATCH_LOG_PATH,
         attachments_dir=ATTACHMENTS_DIR,
         state=state,
+        agent_name=config.agent_name,
     )
     sources = _build_sources(config, state)
 
@@ -86,7 +89,7 @@ def run_forever() -> None:
                 result = dispatcher.dispatch(command)
                 logger.info("dispatch result for %s: %s", command.raw_message_id, result)
                 try:
-                    source.reply(command, _build_reply(result))
+                    source.reply(command, _build_reply(result, config.agent_name))
                 except Exception:
                     logger.exception("failed to send reply for %s", command.raw_message_id)
 

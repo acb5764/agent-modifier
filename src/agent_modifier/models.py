@@ -10,6 +10,10 @@ class Command:
     sender_id: str
     instruction: str
     raw_message_id: str
+    # Where a reply should be sent -- the conversation/thread the command was
+    # triggered from, which may be a 1:1 or a group chat. Not necessarily the
+    # same as sender_id (e.g. a group has multiple senders but one thread).
+    chat_id: str
     attachment_paths: tuple[Path, ...] = field(default_factory=tuple)
 
 

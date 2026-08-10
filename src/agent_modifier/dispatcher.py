@@ -48,6 +48,7 @@ class Dispatcher:
         log_path: str | Path,
         attachments_dir: str | Path,
         state: StateStore,
+        agent_name: str,
     ):
         self._target_repo = target_repo
         self._claude_config = claude_config
@@ -55,6 +56,7 @@ class Dispatcher:
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._attachments_dir = Path(attachments_dir).expanduser()
         self._state = state
+        self._agent_name = agent_name
 
     def dispatch(self, command: Command) -> DispatchResult:
         worktree_name = _make_worktree_name(command.instruction)
@@ -265,9 +267,10 @@ class Dispatcher:
             check=True,
         )
 
-        title = command.instruction.strip()[:72]
+        title = f"[{self._agent_name}] {command.instruction.strip()}"[:72]
         body = (
-            f"Requested via {command.source} by `{command.sender_id}`:\n\n"
+            f"Opened automatically by **{self._agent_name}**, requested via "
+            f"{command.source} by `{command.sender_id}`:\n\n"
             f"> {command.instruction}\n"
         )
         proc = subprocess.run(

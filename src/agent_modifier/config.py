@@ -29,11 +29,14 @@ class ClaudeConfig:
 @dataclass(frozen=True)
 class Config:
     trigger: str
+    agent_name: str
     target_repo: TargetRepoConfig
     allowlist_imessage: list[str]
     poll_interval_seconds: int
     claude: ClaudeConfig
 
+
+DEFAULT_AGENT_NAME = "agent-modifier"
 
 REQUIRED_TOP_LEVEL_KEYS = (
     "trigger",
@@ -73,8 +76,13 @@ def load_config(path: str | Path) -> Config:
     if not isinstance(trigger, str) or not trigger.strip():
         raise ValueError("config trigger must be a non-empty string")
 
+    agent_name = raw.get("agent_name", DEFAULT_AGENT_NAME)
+    if not isinstance(agent_name, str) or not agent_name.strip():
+        raise ValueError("config agent_name must be a non-empty string")
+
     return Config(
         trigger=trigger,
+        agent_name=agent_name,
         target_repo=TargetRepoConfig(
             path=Path(target_repo_raw["path"]).expanduser(),
             base_branch=target_repo_raw["base_branch"],

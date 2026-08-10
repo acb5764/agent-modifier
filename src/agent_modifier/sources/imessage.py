@@ -16,11 +16,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_CHAT_DB_PATH = Path("~/Library/Messages/chat.db").expanduser()
 
 # is_from_me = 0 so we only ever see incoming messages, never our own replies.
+# chat.guid is the conversation the message belongs to -- for a 1:1 it looks
+# like "iMessage;-;+15551234567", for a group like "iMessage;+;chatGUID...".
+# It's exactly the string the Messages app expects for `send ... to chat id`,
+# so it doubles as the reply target: replying always lands back in whichever
+# thread (direct or group) the command came from, not a fresh DM to the sender.
+# GROUP BY collapses the rare case where a message maps to more than one chat
+# row, picking one deterministically rather than duplicating the command.
 QUERY = """
-SELECT message.ROWID, message.text, message.attributedBody, handle.id AS sender
+SELECT message.ROWID, message.text, message.attributedBody, handle.id AS sender,
+       chat.guid AS chat_guid
 FROM message
 JOIN handle ON message.handle_id = handle.ROWID
+JOIN chat_message_join ON chat_message_join.message_id = message.ROWID
+JOIN chat ON chat.ROWID = chat_message_join.chat_id
 WHERE message.ROWID > ? AND message.is_from_me = 0
+GROUP BY message.ROWID
 ORDER BY message.ROWID
 """
 
@@ -93,7 +104,7 @@ class IMessageSource(Source):
 
         conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
         try:
-            for rowid, text, attributed_body, sender in conn.execute(QUERY, (last_seen,)):
+            for rowid, text, attributed_body, sender, chat_guid in conn.execute(QUERY, (last_seen,)):
                 max_rowid = max(max_rowid, rowid)
 
                 if sender not in self._allowlist:
@@ -118,6 +129,7 @@ class IMessageSource(Source):
                         sender_id=sender,
                         instruction=instruction,
                         raw_message_id=str(rowid),
+                        chat_id=chat_guid,
                         attachment_paths=attachment_paths,
                     )
                 )
@@ -132,9 +144,7 @@ class IMessageSource(Source):
     def reply(self, command: Command, text: str) -> None:
         script = (
             'tell application "Messages"\n'
-            "set targetService to first service whose service type = iMessage\n"
-            f'set targetBuddy to buddy "{command.sender_id}" of targetService\n'
-            f'send "{_escape_applescript(text)}" to targetBuddy\n'
+            f'send "{_escape_applescript(text)}" to chat id "{_escape_applescript(command.chat_id)}"\n'
             "end tell"
         )
         subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
