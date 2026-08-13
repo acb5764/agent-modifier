@@ -9,4 +9,4 @@ state/attachments/
 # paths specific to one machine. Templates (config.example.yaml,
 # *.plist.template) are tracked; the generated/filled-in files are not.
 config/config.yaml
-launchd/com.agentmodifier.poller.plist
+launchd/com.agentmodifier.poller.*.plist

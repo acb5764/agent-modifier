@@ -88,6 +88,12 @@ def run_forever() -> None:
                 )
                 result = dispatcher.dispatch(command)
                 logger.info("dispatch result for %s: %s", command.raw_message_id, result)
+                # Ack right after dispatch (success or failure), before the
+                # reply attempt -- dispatch is what's expensive/stateful
+                # (spends budget, may push commits or open a PR), so once
+                # it's done this command must never be redelivered even if
+                # sending the reply below fails.
+                source.ack(command)
                 try:
                     source.reply(command, _build_reply(result, config.agent_name))
                 except Exception:

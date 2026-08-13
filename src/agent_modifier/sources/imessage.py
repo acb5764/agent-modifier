@@ -136,10 +136,26 @@ class IMessageSource(Source):
         finally:
             conn.close()
 
-        if max_rowid > last_seen:
-            self._state.set_last_seen(self.name, max_rowid)
+        # Rows that never became a Command are gone for good -- safe to
+        # skip forever. A row that DID become a Command is only safe to
+        # skip once ack() has been called for it (i.e. once it's been
+        # dispatched), so the cursor stops right before the earliest
+        # pending one instead of racing ahead of it. Everything from there
+        # up to max_rowid just gets re-scanned (and re-filtered, or
+        # re-returned) on the next poll -- cheap, and the only way to
+        # guarantee a crash between poll() and dispatch() can't drop a
+        # message on the floor.
+        safe_rowid = int(commands[0].raw_message_id) - 1 if commands else max_rowid
+        if safe_rowid > last_seen:
+            self._state.set_last_seen(self.name, safe_rowid)
 
         return commands
+
+    def ack(self, command: Command) -> None:
+        rowid = int(command.raw_message_id)
+        current = self._state.get_last_seen(self.name) or 0
+        if rowid > current:
+            self._state.set_last_seen(self.name, rowid)
 
     def reply(self, command: Command, text: str) -> None:
         script = (

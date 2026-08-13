@@ -33,8 +33,24 @@ CLAUDE_BIN_DIR="$(dirname "$CLAUDE_PATH")"
 # we print it separately below rather than using it here.
 VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
 REAL_PYTHON="$(./.venv/bin/python -c 'import os, sys; print(os.path.realpath(sys.executable))')"
-LABEL="com.agentmodifier.poller"
-PLIST_PATH="$REPO_ROOT/launchd/com.agentmodifier.poller.plist"
+
+# Suffix the label with the target repo's name so multiple agent-modifier
+# checkouts on the same machine (each pointed at a different target_repo)
+# get distinct launchd labels. Two jobs sharing one label can't both be
+# loaded -- loading the second silently evicts the first, which is exactly
+# the failure mode this suffix avoids.
+REPO_SLUG="$("$VENV_PYTHON" -c "
+import re, yaml
+cfg = yaml.safe_load(open('config/config.yaml'))
+name = cfg['target_repo']['path'].rstrip('/').split('/')[-1]
+print(re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-'))
+")"
+if [ -z "$REPO_SLUG" ]; then
+    echo "Could not derive a label suffix from target_repo.path in config.yaml" >&2
+    exit 1
+fi
+LABEL="com.agentmodifier.poller.$REPO_SLUG"
+PLIST_PATH="$REPO_ROOT/launchd/$LABEL.plist"
 
 sed \
     -e "s#{{REPO_ROOT}}#$REPO_ROOT#g" \
