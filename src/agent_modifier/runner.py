@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .config import Config, load_config
 from .dispatcher import Dispatcher
-from .models import DispatchResult
+from .models import Command, DispatchResult
 from .sources.base import Source
 from .sources.imessage import IMessageSource
 from .state import StateStore
@@ -50,6 +50,71 @@ def _build_sources(config: Config, state: StateStore) -> list[Source]:
     ]
 
 
+def _apply_cursor_bootstrap(config: Config, state: StateStore, sources: list[Source]) -> None:
+    if config.bootstrap_cursor_after is None:
+        return
+    for source in sources:
+        if state.is_bootstrap_applied(source.name) or not isinstance(source, IMessageSource):
+            continue
+        rowid = source.rowid_before(config.bootstrap_cursor_after)
+        logger.warning(
+            "one-time cursor bootstrap: seeding %s cursor to rowid=%s (skip everything before %s, "
+            "per config bootstrap_cursor_after) -- this replaces whatever cursor was already stored",
+            source.name,
+            rowid,
+            config.bootstrap_cursor_after,
+        )
+        state.set_last_seen(source.name, rowid)
+        state.mark_bootstrap_applied(source.name)
+
+
+def _recover_pending_dispatch(state: StateStore, sources: list[Source], agent_name: str) -> None:
+    """Handle a command that was still in flight when the process last died.
+
+    The cursor never advances past a command until ack() runs right after
+    dispatch() returns, so a plain restart is always safe -- the worst case
+    is dispatch() gets called again for a command it never got to. But if
+    dispatch() itself was interrupted mid-run, real side effects (a git
+    commit, a database write) may already have happened, and there's no
+    way to know from here. Auto-retrying would risk doing it twice, so
+    instead: skip it (advance the cursor past it, same as any other command
+    once it's resolved) and tell a human to go check, rather than silently
+    redoing possibly-completed work.
+    """
+    for source in sources:
+        pending = state.get_pending_dispatch(source.name)
+        if not pending:
+            continue
+        logger.critical(
+            "found an in-flight command from before the last restart on %s "
+            "(rowid=%s sender=%s instruction=%r) -- it was NOT auto-retried since it may "
+            "have already partially completed. Skipping it and alerting the sender.",
+            source.name,
+            pending["rowid"],
+            pending["sender_id"],
+            pending["instruction"],
+        )
+        command = Command(
+            source=source.name,
+            sender_id=pending["sender_id"],
+            instruction=pending["instruction"],
+            raw_message_id=str(pending["rowid"]),
+            chat_id=pending["chat_id"],
+        )
+        source.ack(command)
+        state.clear_pending_dispatch(source.name)
+        try:
+            source.reply(
+                command,
+                "I got interrupted partway through your last request and I'm not "
+                "sure if it finished or not, so I'm not redoing it automatically -- "
+                "please check before asking me to try again.\n\n"
+                f"— {agent_name}",
+            )
+        except Exception:
+            logger.exception("failed to send crash-recovery alert for %s", pending["rowid"])
+
+
 def run_forever() -> None:
     _configure_logging()
     config = load_config(CONFIG_PATH)
@@ -63,6 +128,9 @@ def run_forever() -> None:
         agent_name=config.agent_name,
     )
     sources = _build_sources(config, state)
+
+    _apply_cursor_bootstrap(config, state, sources)
+    _recover_pending_dispatch(state, sources, config.agent_name)
 
     logger.info(
         "agent-modifier starting: trigger=%r target_repo=%s poll_interval=%ss",
@@ -86,6 +154,18 @@ def run_forever() -> None:
                     command.source,
                     command.instruction,
                 )
+                # Recorded before dispatch() runs so a crash mid-dispatch is
+                # detectable on the next startup (see
+                # _recover_pending_dispatch) instead of silently retried.
+                state.set_pending_dispatch(
+                    source.name,
+                    {
+                        "rowid": int(command.raw_message_id),
+                        "sender_id": command.sender_id,
+                        "instruction": command.instruction,
+                        "chat_id": command.chat_id,
+                    },
+                )
                 result = dispatcher.dispatch(command)
                 logger.info("dispatch result for %s: %s", command.raw_message_id, result)
                 # Ack right after dispatch (success or failure), before the
@@ -94,6 +174,7 @@ def run_forever() -> None:
                 # it's done this command must never be redelivered even if
                 # sending the reply below fails.
                 source.ack(command)
+                state.clear_pending_dispatch(source.name)
                 try:
                     source.reply(command, _build_reply(result, config.agent_name))
                 except Exception:

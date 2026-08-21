@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -34,6 +35,16 @@ class Config:
     allowlist_imessage: list[str]
     poll_interval_seconds: int
     claude: ClaudeConfig
+    # One-time cursor seed: on first startup after this is set, the
+    # imessage cursor is set to skip everything before this local
+    # date/time instead of using whatever's already in state.json --
+    # e.g. after an outage where a backlog was handled by hand and
+    # shouldn't be replayed. Self-consuming (see StateStore
+    # is_bootstrap_applied): once applied it's recorded in state.json and
+    # won't re-apply on later restarts even if this stays set in config,
+    # so it's safe to leave here afterward rather than remembering to
+    # remove it.
+    bootstrap_cursor_after: datetime | None = None
 
 
 DEFAULT_AGENT_NAME = "agent-modifier"
@@ -80,6 +91,16 @@ def load_config(path: str | Path) -> Config:
     if not isinstance(agent_name, str) or not agent_name.strip():
         raise ValueError("config agent_name must be a non-empty string")
 
+    bootstrap_raw = raw.get("bootstrap_cursor_after")
+    bootstrap_cursor_after = None
+    if bootstrap_raw:
+        try:
+            bootstrap_cursor_after = datetime.fromisoformat(str(bootstrap_raw))
+        except ValueError as exc:
+            raise ValueError(
+                f"config bootstrap_cursor_after must be an ISO 8601 date/time, got {bootstrap_raw!r}"
+            ) from exc
+
     return Config(
         trigger=trigger,
         agent_name=agent_name,
@@ -95,4 +116,5 @@ def load_config(path: str | Path) -> Config:
             permission_mode=claude_raw["permission_mode"],
             max_budget_usd=float(claude_raw["max_budget_usd"]),
         ),
+        bootstrap_cursor_after=bootstrap_cursor_after,
     )

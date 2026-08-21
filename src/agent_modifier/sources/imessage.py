@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import typedstream
@@ -14,6 +15,10 @@ from .base import Source
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHAT_DB_PATH = Path("~/Library/Messages/chat.db").expanduser()
+
+# message.date is nanoseconds since the "Apple epoch" (2001-01-01 00:00:00
+# UTC), not the Unix epoch -- this is the offset between the two.
+APPLE_EPOCH_OFFSET_SECONDS = 978307200
 
 # is_from_me = 0 so we only ever see incoming messages, never our own replies.
 # chat.guid is the conversation the message belongs to -- for a 1:1 it looks
@@ -96,6 +101,32 @@ class IMessageSource(Source):
             logger.warning(
                 "no allowlisted iMessage senders configured -- no commands will be actioned"
             )
+
+    def rowid_before(self, cutoff: datetime) -> int:
+        """Return the ROWID to use as `last_seen` so polling resumes at `cutoff`.
+
+        `cutoff` is interpreted as local time (naive datetimes are treated
+        as this machine's local timezone, matching how a person would read
+        a date like "2026-08-14"). Used for one-time cursor bootstrapping
+        only -- normal operation never calls this, since the persisted
+        cursor is always the source of truth once one exists.
+        """
+        target_ns = int((cutoff.timestamp() - APPLE_EPOCH_OFFSET_SECONDS) * 1_000_000_000)
+        conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+        try:
+            first_at_or_after = conn.execute(
+                "SELECT MIN(ROWID) FROM message WHERE date >= ?", (target_ns,)
+            ).fetchone()[0]
+            if first_at_or_after is not None:
+                return first_at_or_after - 1
+            # Nothing on record yet at/after cutoff (it's still in the
+            # future) -- skip everything that exists so far; anything new
+            # will naturally have a timestamp at/after cutoff by the time
+            # it arrives.
+            max_rowid = conn.execute("SELECT MAX(ROWID) FROM message").fetchone()[0]
+            return max_rowid or 0
+        finally:
+            conn.close()
 
     def poll(self) -> list[Command]:
         last_seen = self._state.get_last_seen(self.name) or 0

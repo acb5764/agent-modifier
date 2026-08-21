@@ -67,3 +67,12 @@ claude:
   # Hard cap on spend per dispatched command, as a backstop against
   # runaway loops.
   max_budget_usd: 2.00
+
+# bootstrap_cursor_after: optional, and only needed after an outage where
+# a backlog of messages was handled by hand and must NOT be replayed once
+# this starts back up. On first startup after this is set, the imessage
+# cursor is seeded to skip everything before this local date/time instead
+# of using whatever's already in state/state.json. Self-consuming -- once
+# applied it's recorded in state.json and won't re-apply on later
+# restarts, so it's safe to leave this in config afterward.
+# bootstrap_cursor_after: "2026-08-14T00:00:00"

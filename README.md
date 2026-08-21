@@ -49,6 +49,14 @@ later without touching the dispatcher.
    (timestamp, sender, instruction, attachment count, outcome, PR url or
    error, cost).
 6. The sender gets an iMessage reply with the result.
+7. If the process is killed while a command is actually being dispatched
+   (not just polled), that's the one case the cursor alone can't make
+   safe -- real side effects may have already happened. So right before
+   `dispatch()` runs, the command is recorded in `state/state.json` as
+   in-flight; that record is cleared right after `ack()`. If it's still
+   there on the next startup, the runner does NOT retry it automatically
+   -- it skips it and texts the sender to say it may not have finished, so
+   a person can check instead of risking a duplicate.
 
 ## One-time setup
 
@@ -89,6 +97,10 @@ later without touching the dispatcher.
      sqlite3 ~/Library/Messages/chat.db "SELECT DISTINCT id FROM handle;"
      ```
      (only works once Full Disk Access is granted).
+
+   - `bootstrap_cursor_after` (optional): only needed after an outage where
+     a backlog of messages was handled by hand and must not be replayed.
+     See the comment in `config.example.yaml` for details.
 
 4. **Confirm `gh` auth** works against the target repo:
    ```
