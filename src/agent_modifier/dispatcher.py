@@ -250,21 +250,28 @@ class Dispatcher:
             for f in changed_files
         )
 
+    @staticmethod
+    def _run_checked(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+        # subprocess.run(check=True) raises CalledProcessError, whose default
+        # __str__ omits stdout/stderr entirely -- logger.exception() on that
+        # only ever shows "exited 1", never the actual git/gh error message
+        # that would explain why. Surface it explicitly instead.
+        proc = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"{cmd[0]} exited {proc.returncode}: {proc.stderr.strip()[:2000]}"
+            )
+        return proc
+
     def _push_to_base_branch(self, worktree_path: Path) -> None:
-        subprocess.run(
+        self._run_checked(
             ["git", "-C", str(worktree_path), "push", "origin",
              f"HEAD:refs/heads/{self._target_repo.base_branch}"],
-            capture_output=True,
-            text=True,
-            check=True,
         )
 
     def _push_and_open_pr(self, command: Command, worktree_path: Path, branch_name: str) -> str:
-        subprocess.run(
+        self._run_checked(
             ["git", "-C", str(worktree_path), "push", "-u", "origin", branch_name],
-            capture_output=True,
-            text=True,
-            check=True,
         )
 
         title = f"[{self._agent_name}] {command.instruction.strip()}"[:72]
@@ -273,7 +280,7 @@ class Dispatcher:
             f"{command.source} by `{command.sender_id}`:\n\n"
             f"> {command.instruction}\n"
         )
-        proc = subprocess.run(
+        proc = self._run_checked(
             [
                 "gh", "pr", "create",
                 "--base", self._target_repo.base_branch,
@@ -282,9 +289,6 @@ class Dispatcher:
                 "--body", body,
             ],
             cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            check=True,
         )
         return proc.stdout.strip().splitlines()[-1]
 
