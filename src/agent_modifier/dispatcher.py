@@ -59,6 +59,7 @@ class Dispatcher:
         self._agent_name = agent_name
 
     def dispatch(self, command: Command) -> DispatchResult:
+        self._sync_base_branch()
         worktree_name = _make_worktree_name(command.instruction)
         branch_name = f"worktree-{worktree_name}"
         worktree_path = self._target_repo.path / ".claude" / "worktrees" / worktree_name
@@ -107,7 +108,7 @@ class Dispatcher:
                     )
                     self._audit(command, outcome)
                     return outcome
-                except subprocess.CalledProcessError:
+                except RuntimeError:
                     logger.warning(
                         "auto-push to %s failed for %s, falling back to PR",
                         self._target_repo.base_branch,
@@ -134,6 +135,34 @@ class Dispatcher:
         finally:
             self._cleanup_worktree(worktree_name)
             self._cleanup_attachments(worktree_name)
+
+    def _sync_base_branch(self) -> None:
+        """Fast-forward the local base branch to match origin before a new
+        worktree branches off it.
+
+        Without this, worktrees keep branching from whatever stale state
+        the local checkout was left at, so Claude sometimes re-does work
+        another already-merged PR already covers. That branch then has a
+        net-zero diff against the real (current) base branch, which is
+        exactly what makes `gh pr create` fail with "No commits between
+        main and branch" -- not an auth or environment problem, just an
+        out-of-date starting point. Best-effort: if this doesn't succeed
+        (e.g. the checkout isn't on base_branch, or has local changes),
+        dispatch proceeds anyway rather than blocking on it -- that's the
+        same staleness risk that already existed, not a new failure mode.
+        """
+        try:
+            self._run_checked(["git", "-C", str(self._target_repo.path), "fetch", "origin", self._target_repo.base_branch])
+            self._run_checked(
+                ["git", "-C", str(self._target_repo.path), "merge", "--ff-only",
+                 f"origin/{self._target_repo.base_branch}"]
+            )
+        except Exception:
+            logger.exception(
+                "could not fast-forward local %s to origin before dispatch -- "
+                "continuing with whatever's currently checked out",
+                self._target_repo.base_branch,
+            )
 
     def _history_key(self, command: Command) -> str:
         return f"{command.source}:{command.sender_id}"
