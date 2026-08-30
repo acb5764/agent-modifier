@@ -23,8 +23,13 @@ HISTORY_LIMIT = 2
 
 APPEND_SYSTEM_PROMPT = (
     "After making the requested changes, stage and commit them with git. "
-    "Do not push and do not open a pull request -- that is handled outside "
-    "this session. "
+    "Do NOT run `git push` and do NOT run `gh pr create` yourself -- that "
+    "step always happens deterministically right after this session ends, "
+    "even if the person's message explicitly asks you to push or open a "
+    "PR. Treat that as already handled, not as something to do yourself: "
+    "pushing or opening a PR here creates a duplicate, conflicting PR for "
+    "the same branch and makes the real push step fail. Committing locally "
+    "is the last git command you should run. "
     "Your final message will be sent as a text message to a non-technical "
     "family member, so write it like a quick, warm text: short, plain "
     "English, no git/file/code jargon (don't say 'committed', don't show "
@@ -309,16 +314,33 @@ class Dispatcher:
             f"{command.source} by `{command.sender_id}`:\n\n"
             f"> {command.instruction}\n"
         )
-        proc = self._run_checked(
-            [
-                "gh", "pr", "create",
-                "--base", self._target_repo.base_branch,
-                "--head", branch_name,
-                "--title", title,
-                "--body", body,
-            ],
-            cwd=worktree_path,
-        )
+        try:
+            proc = self._run_checked(
+                [
+                    "gh", "pr", "create",
+                    "--base", self._target_repo.base_branch,
+                    "--head", branch_name,
+                    "--title", title,
+                    "--body", body,
+                ],
+                cwd=worktree_path,
+            )
+        except RuntimeError as exc:
+            # Claude is told not to push/open a PR itself, but a sufficiently
+            # direct instruction ("...open a PR") can override that --
+            # bypassPermissions gives it the Bash access to actually do it.
+            # If it already opened one for this exact branch, gh's own error
+            # names that PR's URL; reuse it instead of failing the dispatch.
+            existing = re.search(r"already exists:\s*(https://\S+)", str(exc))
+            if not existing:
+                raise
+            logger.warning(
+                "gh pr create found an existing PR for %s (Claude likely opened "
+                "it itself despite being told not to) -- reusing it: %s",
+                branch_name,
+                existing.group(1),
+            )
+            return existing.group(1)
         return proc.stdout.strip().splitlines()[-1]
 
     def _cleanup_worktree(self, worktree_name: str) -> None:
