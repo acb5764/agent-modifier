@@ -4,6 +4,7 @@ __pycache__/
 logs/*.log
 state/*.json
 state/attachments/
+state/runner.lock
 
 # Real, per-deployment config/plist -- contains phone numbers and absolute
 # paths specific to one machine. Templates (config.example.yaml,

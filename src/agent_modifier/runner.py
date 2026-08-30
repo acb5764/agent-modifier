@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import fcntl
 import logging
+import sys
 import time
 from pathlib import Path
 
@@ -14,11 +16,46 @@ from .state import StateStore
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
 STATE_PATH = REPO_ROOT / "state" / "state.json"
+LOCK_PATH = REPO_ROOT / "state" / "runner.lock"
 ATTACHMENTS_DIR = REPO_ROOT / "state" / "attachments"
 DISPATCH_LOG_PATH = REPO_ROOT / "logs" / "dispatch.log"
 RUNNER_LOG_PATH = REPO_ROOT / "logs" / "runner.log"
 
 logger = logging.getLogger(__name__)
+
+# Holds the lock file object for the process lifetime -- module-level so it
+# survives after _acquire_single_instance_lock() returns. A local variable
+# would be garbage-collected as soon as the function exits (nothing else
+# references it), which closes the fd and silently releases the flock
+# immediately -- defeating the whole point.
+_lock_file = None
+
+
+def _acquire_single_instance_lock() -> None:
+    """Refuse to start if another runner is already using this state.json.
+
+    Two processes polling the same cursor is the one way the no-redelivery
+    guarantee could actually break -- both would read the same last_seen
+    before either writes it back, and could dispatch the same command
+    twice. This is a real risk in practice: the README documents running
+    `python -m agent_modifier.runner` in the foreground for manual testing,
+    which is easy to leave running (or start twice) alongside the launchd
+    job. flock is held for the life of the process and released
+    automatically (by the OS) on exit or crash, no cleanup needed.
+    """
+    global _lock_file
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _lock_file = open(LOCK_PATH, "w")
+    try:
+        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        logger.critical(
+            "another agent-modifier instance already holds %s -- refusing to start "
+            "a second one against the same state.json (would risk double-dispatching "
+            "the same message)",
+            LOCK_PATH,
+        )
+        sys.exit(1)
 
 
 def _configure_logging() -> None:
@@ -117,6 +154,7 @@ def _recover_pending_dispatch(state: StateStore, sources: list[Source], agent_na
 
 def run_forever() -> None:
     _configure_logging()
+    _acquire_single_instance_lock()
     config = load_config(CONFIG_PATH)
     state = StateStore(STATE_PATH)
     dispatcher = Dispatcher(
