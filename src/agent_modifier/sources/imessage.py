@@ -29,7 +29,7 @@ APPLE_EPOCH_OFFSET_SECONDS = 978307200
 # GROUP BY collapses the rare case where a message maps to more than one chat
 # row, picking one deterministically rather than duplicating the command.
 QUERY = """
-SELECT message.ROWID, message.text, message.attributedBody, handle.id AS sender,
+SELECT message.ROWID, message.date, message.text, message.attributedBody, handle.id AS sender,
        chat.guid AS chat_guid
 FROM message
 JOIN handle ON message.handle_id = handle.ROWID
@@ -39,6 +39,17 @@ WHERE message.ROWID > ? AND message.is_from_me = 0
 GROUP BY message.ROWID
 ORDER BY message.ROWID
 """
+
+# When someone sends several photos as one action, iMessage/chat.db usually
+# splits them into separate message rows -- only one of which carries the
+# typed caption, the rest have no text at all. A caption-less row is
+# otherwise indistinguishable from someone just sending a random photo with
+# no request attached, so it's only ever picked up as "belongs to the
+# triggered message next to it" if it lands within this many nanoseconds of
+# one, from the same sender and chat. Wide enough to cover a multi-photo
+# burst (all such rows normally share the same handful of seconds), narrow
+# enough not to glue an unrelated, later photo onto an old command.
+BURST_WINDOW_NS = 10_000_000_000
 
 ATTACHMENTS_QUERY = """
 SELECT attachment.filename
@@ -131,13 +142,30 @@ class IMessageSource(Source):
     def poll(self) -> list[Command]:
         last_seen = self._state.get_last_seen(self.name) or 0
         max_rowid = last_seen
-        commands: list[Command] = []
 
         conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
         try:
-            for rowid, text, attributed_body, sender, chat_guid in conn.execute(QUERY, (last_seen,)):
+            rows = conn.execute(QUERY, (last_seen,)).fetchall()
+            for rowid, *_rest in rows:
                 max_rowid = max(max_rowid, rowid)
 
+            # Caption-less rows (no text, so they can't match the trigger on
+            # their own) from an allowlisted sender, keyed by (sender,
+            # chat_guid) so a triggered message only ever picks up orphans
+            # from its own conversation.
+            orphans_by_thread: dict[tuple[str, str], list[tuple[int, int]]] = {}
+            for rowid, date, text, attributed_body, sender, chat_guid in rows:
+                if sender not in self._allowlist:
+                    continue
+                if _extract_text(text, attributed_body):
+                    continue
+                if not _fetch_attachments(conn, rowid):
+                    continue
+                orphans_by_thread.setdefault((sender, chat_guid), []).append((rowid, date))
+
+            commands: list[Command] = []
+            consumed_rowids: dict[str, int] = {}
+            for rowid, date, text, attributed_body, sender, chat_guid in rows:
                 if sender not in self._allowlist:
                     continue
 
@@ -150,33 +178,43 @@ class IMessageSource(Source):
                     continue
 
                 instruction = stripped[len(self._trigger):].strip()
-                attachment_paths = _fetch_attachments(conn, rowid)
+                attachment_paths = list(_fetch_attachments(conn, rowid))
+                min_rowid = rowid
+
+                for orphan_rowid, orphan_date in orphans_by_thread.get((sender, chat_guid), []):
+                    if abs(orphan_date - date) <= BURST_WINDOW_NS:
+                        attachment_paths.extend(_fetch_attachments(conn, orphan_rowid))
+                        min_rowid = min(min_rowid, orphan_rowid)
+
                 if not instruction and not attachment_paths:
                     continue
 
+                command_id = str(rowid)
+                consumed_rowids[command_id] = min_rowid
                 commands.append(
                     Command(
                         source=self.name,
                         sender_id=sender,
                         instruction=instruction,
-                        raw_message_id=str(rowid),
+                        raw_message_id=command_id,
                         chat_id=chat_guid,
-                        attachment_paths=attachment_paths,
+                        attachment_paths=tuple(attachment_paths),
                     )
                 )
         finally:
             conn.close()
 
         # Rows that never became a Command are gone for good -- safe to
-        # skip forever. A row that DID become a Command is only safe to
-        # skip once ack() has been called for it (i.e. once it's been
-        # dispatched), so the cursor stops right before the earliest
-        # pending one instead of racing ahead of it. Everything from there
-        # up to max_rowid just gets re-scanned (and re-filtered, or
-        # re-returned) on the next poll -- cheap, and the only way to
+        # skip forever. A row that DID become a Command (including any
+        # caption-less attachment rows folded into it above) is only safe
+        # to skip once ack() has been called for it, so the cursor stops
+        # right before the earliest rowid still tied to a pending command
+        # instead of racing ahead of it. Everything from there up to
+        # max_rowid just gets re-scanned (and re-filtered, or re-returned,
+        # re-merged) on the next poll -- cheap, and the only way to
         # guarantee a crash between poll() and dispatch() can't drop a
-        # message on the floor.
-        safe_rowid = int(commands[0].raw_message_id) - 1 if commands else max_rowid
+        # message or a merged attachment on the floor.
+        safe_rowid = min(consumed_rowids.values()) - 1 if consumed_rowids else max_rowid
         if safe_rowid > last_seen:
             self._state.set_last_seen(self.name, safe_rowid)
 
