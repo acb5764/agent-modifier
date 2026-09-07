@@ -73,18 +73,32 @@ def _fetch_attachments(conn: sqlite3.Connection, message_rowid: int) -> tuple[Pa
     return tuple(paths)
 
 
+def _strip_attachment_placeholders(text: str | None) -> str | None:
+    # When a photo/file is attached inline in the same bubble as typed text
+    # (as opposed to its own separate message), chat.db's text field embeds
+    # U+FFFC (OBJECT REPLACEMENT CHARACTER) at the attachment's position --
+    # e.g. "￼🥭 add this" for a caption typed *after* the photo. Left
+    # in, that leading ￼ breaks the trigger-prefix check even though
+    # the person very much did type the trigger. The attachment itself is
+    # already handled separately via _fetch_attachments, so this marker is
+    # never meaningful content -- just drop it.
+    if text is None:
+        return None
+    return text.replace("￼", "")
+
+
 def _extract_text(text: str | None, attributed_body: bytes | None) -> str | None:
     # On modern macOS, message.text is frequently NULL and the real text is
     # archived inside attributedBody as a legacy NSArchiver "typedstream"
     # blob (NSAttributedString), not plain text or a keyed plist.
     if text:
-        return text
+        return _strip_attachment_placeholders(text)
     if not attributed_body:
         return None
     try:
         obj = typedstream.unarchive_from_data(attributed_body)
         value = obj.contents[0].value
-        return getattr(value, "value", None)
+        return _strip_attachment_placeholders(getattr(value, "value", None))
     except Exception:
         logger.exception("failed to parse attributedBody blob")
         return None
