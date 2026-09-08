@@ -220,50 +220,31 @@ class IMessageSource(Source):
                     )
                 )
 
-            # An orphan only merges into a triggered command if both land in
-            # this same poll -- but dispatch can take anywhere from seconds
-            # to (per CLAUDE_TIMEOUT_SECONDS) minutes, and the cursor moves
-            # past a triggered message the moment it's dispatched. So a
-            # photo attached moments later, as its own separate send, easily
-            # lands in a *later* poll with no triggered sibling left to
-            # claim it -- there's nothing to widen a time window against.
-            # Rather than let that go the same way the pre-fix silent drop
-            # did, an unclaimed orphan becomes its own command with an empty
-            # instruction: the dispatcher already has a fallback prompt for
-            # exactly that ("use the attached file(s) as context"), plus a
-            # per-sender history recap, so it still has enough to go on.
-            for (sender, chat_guid), orphans in orphans_by_thread.items():
-                for orphan_rowid, _orphan_date in orphans:
-                    if orphan_rowid in claimed_orphan_rowids:
-                        continue
-                    command_id = str(orphan_rowid)
-                    consumed_rowids[command_id] = orphan_rowid
-                    commands.append(
-                        Command(
-                            source=self.name,
-                            sender_id=sender,
-                            instruction="",
-                            raw_message_id=command_id,
-                            chat_id=chat_guid,
-                            attachment_paths=_fetch_attachments(conn, orphan_rowid),
-                        )
-                    )
+            # An unclaimed orphan (no triggered message nearby in this same
+            # poll) is deliberately left to expire on its own -- NOT turned
+            # into a standalone command. That was tried and immediately
+            # caused the opposite failure: any bare photo/video an
+            # allowlisted sender ever sent, for any reason, unrelated to the
+            # farm entirely, silently dispatched a real (paid) Claude Code
+            # session with no trigger typed anywhere. Requiring the trigger
+            # to appear on *some* message in the batch is what keeps this
+            # bot from acting on things nobody asked it to act on -- an
+            # occasional dropped photo (recoverable: just resend it with the
+            # 🥭) is a far smaller failure than that.
         finally:
             conn.close()
 
-        commands.sort(key=lambda c: int(c.raw_message_id))
-
         # Rows that never became a Command are gone for good -- safe to
-        # skip forever. A row that DID become a Command (including any
-        # caption-less attachment rows folded into it above, or standing
-        # alone as their own command) is only safe to skip once ack() has
-        # been called for it, so the cursor stops right before the earliest
-        # rowid still tied to a pending command instead of racing ahead of
-        # it. Everything from there up to max_rowid just gets re-scanned
-        # (and re-filtered, or re-returned, re-merged) on the next poll --
-        # cheap, and the only way to guarantee a crash between poll() and
-        # dispatch() can't drop a message or a merged attachment on the
-        # floor.
+        # skip forever (this includes any unclaimed orphan; see above). A
+        # row that DID become a Command (including any caption-less
+        # attachment rows folded into it above) is only safe to skip once
+        # ack() has been called for it, so the cursor stops right before the
+        # earliest rowid still tied to a pending command instead of racing
+        # ahead of it. Everything from there up to max_rowid just gets
+        # re-scanned (and re-filtered, or re-returned, re-merged) on the
+        # next poll -- cheap, and the only way to guarantee a crash between
+        # poll() and dispatch() can't drop a message or a merged attachment
+        # on the floor.
         safe_rowid = min(consumed_rowids.values()) - 1 if consumed_rowids else max_rowid
         if safe_rowid > last_seen:
             self._state.set_last_seen(self.name, safe_rowid)
