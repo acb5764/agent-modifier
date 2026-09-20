@@ -23,3 +23,11 @@ class DispatchResult:
     message: str
     pr_url: str | None = None
     cost_usd: float | None = None
+    # True only for the "claude never ran / crashed before producing a real
+    # result" path (worktree setup blew up, the claude subprocess itself
+    # exited non-zero, JSON parsing failed, etc). Deliberately separate from
+    # `success`, which in this codebase means "committed a code change" --
+    # most fulfilled requests (a database-only inventory update, answering a
+    # question) already report success=False despite working correctly, so
+    # `success` can't be used to detect "nothing happened at all".
+    crashed: bool = False

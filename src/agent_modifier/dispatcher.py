@@ -79,9 +79,14 @@ class Dispatcher:
             logger.exception("claude invocation failed for %s", command.raw_message_id)
             self._cleanup_worktree(worktree_name)
             self._cleanup_attachments(worktree_name)
+            # crashed=True: this is specifically the pre-result path (claude
+            # itself never ran, or failed before returning anything) -- no
+            # tool call, no possible database write, nothing to redo. See
+            # DispatchResult.crashed and _audit()'s use of it below.
             outcome = DispatchResult(
                 success=False,
                 message="Ran into a technical hiccup and couldn't finish that one -- try again in a bit.",
+                crashed=True,
             )
             self._audit(command, outcome)
             return outcome
@@ -367,6 +372,15 @@ class Dispatcher:
         }
         with self._log_path.open("a") as f:
             f.write(json.dumps(entry) + "\n")
+        # A crashed dispatch never reached the point of doing (or not doing)
+        # anything, so there's nothing here worth a future message's recap
+        # -- and critically, the recap prompt unconditionally frames every
+        # entry as "already done and committed -- do NOT redo", which would
+        # actively be *wrong* for a crash (nothing was done) and could talk
+        # a retried/replayed command out of applying a change that's still
+        # genuinely pending.
+        if result.crashed:
+            return
         self._state.append_history(
             self._history_key(command), command.instruction, result.message, limit=HISTORY_LIMIT
         )
